@@ -55,6 +55,8 @@ _TIME_SYNONYMS = {"timestamp", "time", "datetime", "ts", "date_time", "date"}
 _FLOW_SYNONYMS = {
     "flow", "flow_rate", "flowrate", "rate",
     "gpm", "gph", "lpm", "l_min", "l_hr",
+    "volume_gal_m", "volume_gal_hr", "volume_gal_day",
+    "volume_gpm", "volume_gph",
 }
 
 # Column name -> implied unit for the flow reading
@@ -64,6 +66,10 @@ _UNIT_HINTS = {
     "lpm": "lpm",
     "l_min": "lpm",
     "l_hr": "l_hr",
+    "volume_gal_m":   "gpm",
+    "volume_gpm":     "gpm",
+    "volume_gal_hr":  "gph",
+    "volume_gph":     "gph",
 }
 
 
@@ -106,9 +112,33 @@ def _detect_cols(df: pd.DataFrame) -> tuple[str, str, str | None]:
     return time_col, flow_col, unit_hint
 
 
+def _auto_skip_header(path: Path, probe_lines: int = 40) -> int:
+    """
+    Guess how many metadata lines to skip before the real header row.
+
+    Scans the first few lines; returns the index of the first line that
+    looks like a column header (contains a time/date-ish word and a
+    flow/volume-ish word). Returns 0 if nothing matches.
+    """
+    time_hints = ("date", "time", "timestamp", "datetime")
+    flow_hints = ("flow", "volume", "gpm", "gph", "gal", "l/", "lpm", "rate")
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                if i >= probe_lines:
+                    break
+                lower = line.lower()
+                if any(h in lower for h in time_hints) and any(h in lower for h in flow_hints):
+                    return i
+    except OSError:
+        pass
+    return 0
+
+
 def load_meter(
     path: str | Path,
     unit: str | None = None,
+    skip_header: int | None = None,
 ) -> pd.DataFrame:
     """
     Load a meter CSV and return a DataFrame with columns:
@@ -119,12 +149,21 @@ def load_meter(
     data gap doesn't inflate one bin).
 
     Supported units: gpm (default), gph, lpm, l_hr.
+
+    If the CSV starts with metadata rows before the real header, pass
+    `skip_header=<n>` (or let the auto-detector find it).
     """
     p = Path(path).expanduser().resolve()
     if not p.exists():
         raise FileNotFoundError(f"No such file: {p}")
 
-    df = pd.read_csv(p)
+    if skip_header is None:
+        skip_header = _auto_skip_header(p)
+
+    df = pd.read_csv(p, skiprows=skip_header)
+    # Drop junk columns (unnamed / empty) and rows where the whole row is NaN
+    df = df.loc[:, [not str(c).startswith("Unnamed") for c in df.columns]]
+    df = df.dropna(how="all")
     df.columns = [_normalize_col(c) for c in df.columns]
 
     time_col, flow_col, unit_hint = _detect_cols(df)
@@ -237,6 +276,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Door 1 — meter CSV reader.")
     ap.add_argument("path", help="Path to meter CSV.")
     ap.add_argument("--unit", default=None, help="Flow unit: gpm (default), gph, lpm, l_hr.")
+    ap.add_argument("--skip-header", type=int, default=None, help="Lines to skip before the header row (auto-detected if omitted).")
     ap.add_argument("--daily", action="store_true", help="Print per-day totals.")
     ap.add_argument("--profile", action="store_true", help="Print 24h normalized load shape.")
     ap.add_argument("--peak-hour", action="store_true", help="Print peak hourly gph only.")
@@ -244,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     try:
-        df = load_meter(args.path, unit=args.unit)
+        df = load_meter(args.path, unit=args.unit, skip_header=args.skip_header)
     except (FileNotFoundError, ValueError) as e:
         sys.stderr.write(f"error: {e}\n")
         return 2

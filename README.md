@@ -1,6 +1,6 @@
 ﻿# Heat Pump Project
 
-Working repo for the heat pump project.
+Heat Pump Water Heater Sizing Project in partnership with _____ (this is public so I can't put the company but I'll change it once I add the teammates and private it.
 
 ## Folders
 
@@ -11,4 +11,3 @@ Working repo for the heat pump project.
 - check
 - options
 - merge-rule
-
